@@ -1,0 +1,111 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages(c("httr", "tidyverse", "githubinstall"))
+#devtools::install_github('jeremystan/tidyjson',ref='f6f13f4') 
+library(tidyjson)
+library(httr)
+library(tidyverse)
+library(githubinstall)
+library("httpuv")
+#install.packages("devtools")
+#install.packages("tidyjson")
+#install.packages("httpuv")
+
+# указываем endpoint -- URL с которого запрашиваете информацию
+# https://api.github.com/ -- основной endpoint 
+# в httr уже вшиты самые популярные, вроде апи твиттера, гугла и фб
+oauth_endpoints("github")
+
+# авторизуем наше приложение 
+myapp <- oauth_app(appname = "new", # Application name
+                   key = "875e1a6f0f23e67e23d4", # client ID
+                   secret = "04383e851e5816c889b40bc4cbfeacc1374e9848") # client Secret 
+
+# получаем разрешение на авторизацию, получаем токен доступа 
+# Use a local file ('.httr-oauth'), to cache OAuth access credentials between R sessions?-- NO
+github_token <- oauth2.0_token(oauth_endpoints("github"), myapp)
+gtoken <- config(token = github_token)
+```
+
+```{r}
+# HTTP запрос 
+# возьмем пользователя Jenny BC
+req <- GET("https://api.github.com/users/jennybc", gtoken)
+req
+```
+Status code == 200, если все успешно
+
+```{r}
+# достаем содержимое — получим лист
+json1 = content(req, "text")
+
+# преобразуем в таблицу
+df = json1 %>% tidyjson::spread_all()
+df
+```
+
+```{r}
+# ссылка на все репозитории Jenny 
+link = df$repos_url
+
+# скачиваем информацию по 30ти репозиториям Jenny (только столько вроде выдается на одну страницу)
+repos = jsonlite::fromJSON(txt = link)
+repos$commits_url=gsub("\\{|/sha\\}+$", "", repos$commits_url)
+
+# ссылки на каждый отдельный репозиторий Jenny
+link1 = repos$commits_url
+
+# скачиваем информацию по первому репозиторию Jenny
+commits = jsonlite::fromJSON(txt = link1[1])
+```
+
+```{r}
+#### решение проблемы с "базами данных в базе данных"
+#unlisted_df = 1:nrow(commits) %>% map_df(function(y){ 
+
+### создать датасет со вложенными таблицами в колонкаъ 
+#temp = commits[y,] %>% select_if(is.data.frame) 
+#temp = temp %>% map_dfc(function(x){ 
+#temp2 = flatten_df(x) %>% mutate(id = y ) 
+#colnames(temp2) <- paste(names(x), colnames(temp2), sep = "_") 
+#temp2 
+#}) 
+
+### нормальные колонки 
+#temp3 = commits[y,] %>% select_if(function(x) all(is.data.frame(x) == F)) %>% mutate(id = y) 
+
+### итог 
+#temp3 = cbind(temp3, temp) 
+
+#})
+```
+
+```{r}
+# ссылки на все коммиты первого репозитория Jenny 
+link2 <- commits$url
+
+# цикл для скачивания всех коммитов первого репозитория Jenny
+commit_one_rep <- data.frame() # пустая база данных, куда построчно будут записываться коммиты
+for (i in 1:length(link2)) { 
+  single_commit = data.frame(t(unlist(jsonlite::fromJSON(txt = link2[i])))) #скачиваем данные по каждому коммиту
+  commit_one_rep <- plyr::rbind.fill(commit_one_rep, single_commit) #записываем данные по каждому коммиту в пустой датасет
+  Sys.sleep(2)
+}
+
+# оставляем только более менее нужные колонки, объединяем все patch'и в одну колонку - patch
+### это делается для того, чтобы справиться с большим кол-вом NA: в какой-то день было написано несколько коммитов, каждый из них записывается в отдельную колонку files.patch, files.patch1 и т.д. В итоге, все коммиты в этом репозитории от, например, 17 января будут лежать в одной ячейке 
+### так как нам интересны карьерные траектории, агрегированный текст по дням не помешает нам проследить динамику
+commit_one_rep2 <- commit_one_rep %>%
+  unite(patch, names(commit_one_rep[,c(str_which(names(commit_one_rep), pattern = "patch"))])) %>%
+  dplyr::select(commit.author.name, commit.author.date, commit.message, commit.url, url, html_url, author.id, stats.total, stats.additions, stats.deletions, files.filename, files.additions, files.deletions, files.changes, patch)
+
+write.csv(commit_one_rep2, file = "first_repos.csv")
+```
